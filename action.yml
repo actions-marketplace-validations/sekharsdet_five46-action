@@ -1,5 +1,5 @@
 name: five46 AI Acceptance Check
-description: Verify a pull request's acceptance criteria against its preview deploy with an AI agent and your own LLM key. Get a ready-to-commit Playwright spec.
+description: AI agent checks pull request acceptance criteria on preview deploys and writes Playwright E2E tests. Bring your own LLM key.
 author: sekharsdet
 branding:
   icon: check-square
