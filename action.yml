@@ -1,0 +1,248 @@
+name: five46 AI Acceptance Check
+description: Verify a pull request's acceptance criteria against its preview deploy with an AI agent and your own LLM key. Get a ready-to-commit Playwright spec.
+author: sekharsdet
+branding:
+  icon: check-square
+  color: purple
+
+inputs:
+  url:
+    description: The running app (or API base URL) to test, for example your preview deployment's URL.
+    required: true
+  api-key:
+    description: Your LLM API key (store it as a secret). For bedrock, your AWS region. If empty, as on pull requests from forks, the check is skipped with a warning.
+    required: false
+    default: ""
+  provider:
+    description: "LLM provider: gemini, groq, openai, anthropic, or bedrock."
+    required: false
+    default: gemini
+  goal:
+    description: A single plain-English goal to verify. Overrides criteria from the PR description.
+    required: false
+    default: ""
+  criteria:
+    description: Acceptance criteria to verify (one per line). If neither goal nor criteria is set, the "Acceptance criteria" section of the PR description is used.
+    required: false
+    default: ""
+  mode:
+    description: "`test` drives a real browser; `api` drives HTTP requests."
+    required: false
+    default: test
+  model:
+    description: Optional model ID override (FIVE46_LLM_MODEL). By default five46 picks a current small model for your key.
+    required: false
+    default: ""
+  max-steps:
+    description: Maximum agent steps per criterion.
+    required: false
+    default: ""
+  allow-writes:
+    description: "`api` mode: allow POST/PUT/PATCH."
+    required: false
+    default: "false"
+  allow-deletes:
+    description: Allow DELETE requests (api) and destructive-looking clicks (test).
+    required: false
+    default: "false"
+  comment:
+    description: Post (and keep updating) one comment on the pull request with the result.
+    required: false
+    default: "true"
+  fail-on-failure:
+    description: Fail this step when any criterion fails.
+    required: false
+    default: "true"
+  turnsignal-hint:
+    description: Show a one-line pointer to TurnSignal (tracking the generated specs over time) in the comment.
+    required: false
+    default: "true"
+  artifact-name:
+    description: Name of the uploaded artifact.
+    required: false
+    default: five46-results
+  upload-artifacts:
+    description: "`specs` (default) uploads only the generated spec files. `all` adds failure screenshots, DOM snapshots and videos, which show whatever the app displayed. `none` uploads nothing."
+    required: false
+    default: specs
+  allow-fork-prs:
+    description: Run criteria from pull requests opened from forks. Off by default, because a fork's description is written outside your repo and would drive the agent with your LLM key.
+    required: false
+    default: "false"
+  version:
+    description: five46 npm version or range to run.
+    required: false
+    default: "0.5"
+  github-token:
+    description: "Token for reading the PR and posting the comment (needs `pull-requests: write`)."
+    required: false
+    default: ${{ github.token }}
+
+outputs:
+  passed:
+    description: "`true` when every criterion was verified."
+    value: ${{ steps.result.outputs.passed }}
+  criteria-count:
+    description: Number of acceptance criteria checked.
+    value: ${{ steps.criteria.outputs.count }}
+  report-path:
+    description: Path to the machine-readable five46 report (JSON).
+    value: ${{ steps.setup.outputs.report }}
+
+runs:
+  using: composite
+  steps:
+    - name: Prepare
+      id: setup
+      shell: bash
+      env:
+        FIVE46_LLM_API_KEY: ${{ inputs.api-key }}
+      run: |
+        work="$RUNNER_TEMP/five46"
+        mkdir -p "$work/out" "$work/tool"
+        echo "work=$work" >> "$GITHUB_OUTPUT"
+        echo "report=$work/report.json" >> "$GITHUB_OUTPUT"
+        if ! node -e 'process.exit(Number(process.versions.node.split(".")[0]) >= 20 ? 0 : 1)'; then
+          echo "::error title=five46::Node.js 20 or newer is required. Add actions/setup-node before this step."
+          exit 1
+        fi
+        if [ -z "$FIVE46_LLM_API_KEY" ]; then
+          echo "::warning title=five46::No api-key was provided, so the acceptance check was skipped. Secrets aren't available to pull requests from forks."
+          echo "skip=true" >> "$GITHUB_OUTPUT"
+        fi
+
+    # No tokens or keys in this step's environment: package install is the
+    # classic supply-chain attack surface, and five46's dependency tree has
+    # no install scripts to need.
+    - name: Install five46
+      if: steps.setup.outputs.skip != 'true'
+      shell: bash
+      env:
+        WORK: ${{ steps.setup.outputs.work }}
+        FIVE46_VERSION: ${{ inputs.version }}
+      run: |
+        npm install --prefix "$WORK/tool" --no-save --no-audit --no-fund --ignore-scripts --loglevel=error "five46@$FIVE46_VERSION"
+
+    - name: Find acceptance criteria
+      id: criteria
+      if: steps.setup.outputs.skip != 'true'
+      shell: bash
+      env:
+        WORK: ${{ steps.setup.outputs.work }}
+        INPUT_GOAL: ${{ inputs.goal }}
+        INPUT_CRITERIA: ${{ inputs.criteria }}
+        INPUT_ALLOW_FORKS: ${{ inputs.allow-fork-prs }}
+        GITHUB_TOKEN: ${{ inputs.github-token }}
+      run: |
+        if [ -n "$INPUT_GOAL" ]; then
+          echo "found=true" >> "$GITHUB_OUTPUT"
+          echo "count=1" >> "$GITHUB_OUTPUT"
+        elif [ -n "$INPUT_CRITERIA" ]; then
+          printf '%s\n' "$INPUT_CRITERIA" > "$WORK/criteria.md"
+          echo "found=true" >> "$GITHUB_OUTPUT"
+          echo "count=$(grep -c . "$WORK/criteria.md")" >> "$GITHUB_OUTPUT"
+        else
+          args=(criteria --out "$WORK/criteria.md")
+          if [ "$INPUT_ALLOW_FORKS" = "true" ]; then args+=(--allow-forks); fi
+          "$WORK/tool/node_modules/.bin/five46-github" "${args[@]}"
+        fi
+
+    - name: Install browser
+      if: steps.criteria.outputs.found == 'true' && inputs.mode == 'test'
+      shell: bash
+      env:
+        WORK: ${{ steps.setup.outputs.work }}
+      run: |
+        # On a cache-less runner this takes about a minute.
+        "$WORK/tool/node_modules/.bin/playwright" install --with-deps chromium
+
+    # The only step that sees the LLM key, and it never sees the GitHub token.
+    - name: Verify with five46
+      id: run
+      if: steps.criteria.outputs.found == 'true'
+      shell: bash
+      env:
+        WORK: ${{ steps.setup.outputs.work }}
+        FIVE46_LLM_PROVIDER: ${{ inputs.provider }}
+        FIVE46_LLM_API_KEY: ${{ inputs.api-key }}
+        FIVE46_LLM_MODEL: ${{ inputs.model }}
+        INPUT_MODE: ${{ inputs.mode }}
+        INPUT_URL: ${{ inputs.url }}
+        INPUT_GOAL: ${{ inputs.goal }}
+        INPUT_MAX_STEPS: ${{ inputs.max-steps }}
+        INPUT_ALLOW_WRITES: ${{ inputs.allow-writes }}
+        INPUT_ALLOW_DELETES: ${{ inputs.allow-deletes }}
+      run: |
+        if [ -z "$FIVE46_LLM_MODEL" ]; then unset FIVE46_LLM_MODEL; fi
+        case "$INPUT_MODE" in
+          test|api) ;;
+          *) echo "::error title=five46::mode must be 'test' or 'api', got '$INPUT_MODE'"; exit 1 ;;
+        esac
+        args=("$INPUT_MODE" "$INPUT_URL" --report "$WORK/report.json")
+        if [ -n "$INPUT_GOAL" ]; then args+=(--goal "$INPUT_GOAL"); else args+=(--story "$WORK/criteria.md"); fi
+        if [ -n "$INPUT_MAX_STEPS" ]; then args+=(--max-steps "$INPUT_MAX_STEPS"); fi
+        if [ "$INPUT_ALLOW_WRITES" = "true" ] && [ "$INPUT_MODE" = "api" ]; then args+=(--allow-writes); fi
+        if [ "$INPUT_ALLOW_DELETES" = "true" ]; then args+=(--allow-deletes); fi
+        # Generated specs and artifacts land here, not in your checkout.
+        cd "$WORK/out"
+        # The log echoes page text and criteria: don't let either be read
+        # as a workflow command (::add-mask::, ::error::, ...) while it runs.
+        stop_token="five46-$(node -e 'process.stdout.write(require("crypto").randomBytes(16).toString("hex"))')"
+        echo "::stop-commands::$stop_token"
+        set +e
+        "$WORK/tool/node_modules/.bin/five46" "${args[@]}"
+        code=$?
+        echo "::$stop_token::"
+        echo "exit-code=$code" >> "$GITHUB_OUTPUT"
+
+    - name: Report
+      id: result
+      if: always() && steps.run.outcome != 'skipped' && steps.criteria.outputs.found == 'true'
+      shell: bash
+      env:
+        WORK: ${{ steps.setup.outputs.work }}
+        GITHUB_TOKEN: ${{ inputs.github-token }}
+        INPUT_COMMENT: ${{ inputs.comment }}
+        INPUT_HINT: ${{ inputs.turnsignal-hint }}
+        INPUT_ARTIFACT: ${{ inputs.artifact-name }}
+        INPUT_UPLOAD: ${{ inputs.upload-artifacts }}
+      run: |
+        args=(comment --report "$WORK/report.json")
+        if [ "$INPUT_UPLOAD" != "none" ]; then args+=(--artifact-name "$INPUT_ARTIFACT"); fi
+        if [ "$INPUT_COMMENT" != "true" ]; then args+=(--summary-only); fi
+        if [ "$INPUT_HINT" != "true" ]; then args+=(--no-turnsignal-hint); fi
+        "$WORK/tool/node_modules/.bin/five46-github" "${args[@]}" || echo "::warning title=five46::couldn't publish the result"
+
+    - name: Collect artifacts
+      id: collect
+      if: always() && steps.run.outcome != 'skipped' && steps.criteria.outputs.found == 'true' && inputs.upload-artifacts != 'none'
+      shell: bash
+      env:
+        WORK: ${{ steps.setup.outputs.work }}
+        INPUT_UPLOAD: ${{ inputs.upload-artifacts }}
+      run: |
+        mkdir -p "$WORK/upload"
+        case "$INPUT_UPLOAD" in
+          all) cp -R "$WORK/out/." "$WORK/upload/" ;;
+          specs) find "$WORK/out" -maxdepth 1 -type f \( -name 'five46-*.spec.ts' -o -name 'five46-*.test.mjs' \) -exec cp {} "$WORK/upload/" \; ;;
+          *) echo "::error title=five46::upload-artifacts must be specs, all or none, got '$INPUT_UPLOAD'"; exit 1 ;;
+        esac
+        # Artifacts are downloadable by anyone who can read the repo: mask
+        # tokens and passwords in URLs (e.g. a preview bypass token in a
+        # spec's page.goto) in these copies before they leave the runner.
+        "$WORK/tool/node_modules/.bin/five46-github" sanitize --dir "$WORK/upload"
+
+    - name: Upload artifacts
+      if: always() && steps.collect.outcome == 'success'
+      uses: actions/upload-artifact@v7
+      with:
+        name: ${{ inputs.artifact-name }}
+        path: ${{ runner.temp }}/five46/upload
+        if-no-files-found: ignore
+
+    - name: Enforce result
+      if: steps.criteria.outputs.found == 'true' && inputs.fail-on-failure == 'true' && steps.run.outputs.exit-code != '0'
+      shell: bash
+      run: |
+        echo "::error title=five46::Not every acceptance criterion was verified. See the PR comment or job summary."
+        exit 1
