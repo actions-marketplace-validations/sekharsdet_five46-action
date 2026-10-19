@@ -54,9 +54,9 @@ inputs:
     required: false
     default: "true"
   turnsignal-hint:
-    description: Show a one-line pointer to TurnSignal (tracking the generated specs over time) in the comment.
+    description: Add a one-line pointer to TurnSignal (by the author of five46; tracks the generated specs over time) to the comment. Off by default.
     required: false
-    default: "true"
+    default: "false"
   artifact-name:
     description: Name of the uploaded artifact.
     required: false
@@ -210,7 +210,7 @@ runs:
         args=(comment --report "$WORK/report.json")
         if [ "$INPUT_UPLOAD" != "none" ]; then args+=(--artifact-name "$INPUT_ARTIFACT"); fi
         if [ "$INPUT_COMMENT" != "true" ]; then args+=(--summary-only); fi
-        if [ "$INPUT_HINT" != "true" ]; then args+=(--no-turnsignal-hint); fi
+        if [ "$INPUT_HINT" = "true" ]; then args+=(--turnsignal-hint); fi
         "$WORK/tool/node_modules/.bin/five46-github" "${args[@]}" || echo "::warning title=five46::couldn't publish the result"
 
     - name: Collect artifacts

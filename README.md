@@ -63,7 +63,7 @@ test('apply the coupon SAVE10 at checkout, then confirm the total drops by 10%',
 
 </details>
 
-Generated specs, screenshots and videos are in the **five46-results** artifact of this workflow run.
+This run's files are in the **five46-results** artifact of this workflow run.
 
 ---
 
@@ -171,7 +171,7 @@ write-enabled runs at a preview or test environment.
 | `allow-deletes` | `false` | Allow `DELETE` (api) and destructive-looking clicks (test) |
 | `comment` | `true` | Post and update one PR comment. `false` writes only the job summary |
 | `fail-on-failure` | `true` | Fail the step when a criterion fails |
-| `turnsignal-hint` | `true` | Show a one-line pointer to TurnSignal in the comment |
+| `turnsignal-hint` | `false` | Add a one-line pointer to TurnSignal (by the author of five46) to the comment |
 | `upload-artifacts` | `specs` | `specs` uploads only the generated spec files; `all` adds failure screenshots, DOM snapshots and videos; `none` uploads nothing |
 | `artifact-name` | `five46-results` | Name of the uploaded artifact |
 | `allow-fork-prs` | `false` | Run criteria from fork pull requests (see Security) |
@@ -252,8 +252,10 @@ provider is the biggest lever: Groq is the fastest.
 Download the `five46-results` artifact, or copy a spec from the comment,
 and commit it next to your other Playwright tests. If you then want to know
 which tests break or go flaky across PRs, [TurnSignal](https://turnsignal.ai/?utm_source=five46-action&utm_medium=readme)
-tracks exactly that (free during the beta). Turn the comment's pointer off
-with `turnsignal-hint: false`.
+tracks exactly that (free during the beta). Disclosure: TurnSignal is made
+by the author of five46. It's entirely optional: five46 works the same
+without it, and the PR comment only mentions it if you set
+`turnsignal-hint: true`.
 
 ## License
 
